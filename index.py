@@ -8,21 +8,24 @@ from telethon.tl.functions.channels import EditAdminRequest
 from telethon.errors import SessionPasswordNeededError, FloodWaitError, UserNotParticipantError
 
 # --- CONFIGURATION ---
-api_id = 29464258
-api_hash = '5ca1ad6d6e0aa144a6e407e0af64510f'
-phone_number = '+959678096184'
-session_name = 'user_admin_session'
+# On Vercel, you should use Environment Variables for secrets
+api_id = os.environ.get("API_ID", "29464258")
+api_hash = os.environ.get("API_HASH", "5ca1ad6d6e0aa144a6e407e0af64510f")
+phone_number = os.environ.get("PHONE", "+959678096184")
 
-# The specific bot the user must add
+# Vercel file system is Read-Only, except for /tmp.
+# We must store the session there.
+session_name = '/tmp/user_admin_session'
+
 REQUIRED_ADMIN_BOT = '@Localhost8800'
 BOTS_FILE = 'us_only.txt'
 
 app = Flask(__name__)
 
-# --- LOCK for Thread Safety (Fixes Database Locked Error) ---
+# --- LOCK for Thread Safety ---
 telethon_lock = threading.Lock()
 
-# --- PROFESSIONAL HACKER UI TEMPLATE ---
+# --- HTML TEMPLATE (Same as before) ---
 TEMPLATE = """
 <!doctype html>
 <html lang="en">
@@ -145,13 +148,6 @@ TEMPLATE = """
             transform: translateY(-2px); 
             box-shadow: 0 5px 15px rgba(0, 255, 65, 0.3);
         }
-
-        .btn:disabled {
-            background: #555;
-            cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
-        }
         
         .log-container {
             background: #000;
@@ -164,11 +160,6 @@ TEMPLATE = """
             font-family: 'Courier New', Courier, monospace;
         }
 
-        .log-success { color: var(--primary-glow); }
-        .log-error { color: #ff4d4d; }
-        .log-warn { color: #ffc107; }
-        .log-info { color: #17a2b8; }
-
         .count-badge {
             background: var(--primary-glow);
             color: #000;
@@ -176,13 +167,6 @@ TEMPLATE = """
             border-radius: 10px;
             font-weight: bold;
             margin-left: 10px;
-        }
-
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        
-        @media (max-width: 600px) {
-            .grid-2 { grid-template-columns: 1fr; }
-            h1 { font-size: 1.5em; }
         }
     </style>
 </head>
@@ -243,109 +227,83 @@ TEMPLATE = """
 async def telegram_worker(channel_link):
     """Handles the async logic safely."""
     logs = []
+    # Note: Client init is inside function for thread safety in serverless
     client = TelegramClient(session_name, api_id, api_hash)
     
     logs.append(f"> Connecting to Telegram Network...")
-    await client.connect()
+    
+    try:
+        await client.connect()
+    except Exception as e:
+        logs.append(f"> CONNECTION FAILED: {str(e)}")
+        logs.append("> NOTE: Vercel Serverless Functions may block Telegram connections.")
+        return "\n".join(logs)
     
     if not await client.is_user_authorized():
         logs.append("> ERROR: Session not authorized.")
-        logs.append("> Please authorize the session via the terminal/console first.")
+        logs.append("> Serverless environments cannot handle interactive login (Code/2FA).")
+        logs.append("> Please generate the .session file locally and upload it, or use a VPS.")
         await client.disconnect()
         return "\n".join(logs)
 
     logs.append("> Authorization verified.\n")
 
     try:
-        # 1. Resolve Entities
         logs.append(f"> Resolving target channel: {channel_link}")
         channel = await client.get_entity(channel_link)
         
         logs.append(f"> Resolving controller bot: {REQUIRED_ADMIN_BOT}")
         bot_admin = await client.get_entity(REQUIRED_ADMIN_BOT)
         
-        # 2. Check if the required bot is already admin with ADD_ADMINS rights
         logs.append(f"> Verifying permissions for {REQUIRED_ADMIN_BOT}...")
         
-        # We try to edit their rights to ensure they have add_admins=True
-        # If they aren't admin at all, this usually fails, catching the error allows us to instruct the user.
         required_rights = ChatAdminRights(
-            add_admins=True,
-            invite_users=True,
-            change_info=True,
-            post_messages=True,
-            edit_messages=True,
-            delete_messages=True,
-            ban_users=True,
-            manage_call=True
+            add_admins=True, invite_users=True, change_info=True,
+            post_messages=True, edit_messages=True, delete_messages=True,
+            ban_users=True, manage_call=True
         )
         
         try:
             await client(EditAdminRequest(
-                channel=channel,
-                user_id=bot_admin,
-                admin_rights=required_rights,
-                rank="Controller"
+                channel=channel, user_id=bot_admin,
+                admin_rights=required_rights, rank="Controller"
             ))
-            logs.append(f"> SUCCESS: {REQUIRED_ADMIN_BOT} promoted to Admin with 'Add Admins' rights.")
+            logs.append(f"> SUCCESS: {REQUIRED_ADMIN_BOT} promoted to Admin.")
         except UserNotParticipantError:
-            logs.append(f"> ERROR: {REQUIRED_ADMIN_BOT} is NOT an admin in the channel.")
-            logs.append(f("> ACTION REQUIRED: Go to Channel Settings > Administrators > Add Admin"))
-            logs.append(f("> Add {REQUIRED_ADMIN_BOT} and ENABLE 'Add New Admins' permission.")
-            await client.disconnect()
-            return "\n".join(logs)
+            logs.append(f"> ERROR: {REQUIRED_ADMIN_BOT} is NOT an admin.")
         except Exception as e:
-            if "CHAT_ADMIN_REQUIRED" in str(e) or "USER_CREATOR" in str(e):
-                # This can happen if the bot is creator, or we lack rights to promote it
-                logs.append(f"> WARNING: Could not modify permissions for {REQUIRED_ADMIN_BOT}.")
-                logs.append(f("> Ensure {REQUIRED_ADMIN_BOT} is admin with ADD_ADMINS right.")
-            else:
-                logs.append(f"> ERROR: {str(e)}")
-                await client.disconnect()
-                return "\n".join(logs)
+             logs.append(f"> WARNING: {str(e)}")
 
-        # 3. Load Bots from File
-        if not os.path.exists(BOTS_FILE):
+        # Load Bots
+        # Note: Reading file from the deployment directory
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(base_dir, BOTS_FILE)
+        
+        if not os.path.exists(file_path):
             logs.append(f"> FILE ERROR: {BOTS_FILE} not found.")
             await client.disconnect()
             return "\n".join(logs)
             
-        with open(BOTS_FILE, 'r') as f:
+        with open(file_path, 'r') as f:
             bots = [line.strip() for line in f if line.strip()]
             
-        logs.append(f"> Loaded {len(bots)} targets from database.\n")
-        logs.append("="*40)
-        logs.append("      STARTING MASS PROMOTION")
-        logs.append("="*40)
+        logs.append(f"> Loaded {len(bots)} targets.\n")
 
-        # 4. Promote Bots
         for bot_username in bots:
             try:
                 logs.append(f"> Processing: {bot_username}")
                 target_bot = await client.get_entity(bot_username)
                 
                 bot_rights = ChatAdminRights(
-                    post_messages=True,
-                    edit_messages=True,
-                    delete_messages=True,
-                    invite_users=True,
-                    change_info=True,
-                    add_admins=False, # We keep this false for target bots
-                    manage_call=True
+                    post_messages=True, edit_messages=True, delete_messages=True,
+                    invite_users=True, change_info=True, add_admins=False, manage_call=True
                 )
                 
                 await client(EditAdminRequest(
-                    channel=channel,
-                    user_id=target_bot,
-                    admin_rights=bot_rights,
-                    rank="Bot Admin"
+                    channel=channel, user_id=target_bot,
+                    admin_rights=bot_rights, rank="Bot Admin"
                 ))
-                logs.append(f"  [OK] Successfully promoted.")
-                
-            except FloodWaitError as e:
-                logs.append(f"  [HALT] FloodWait detected. Waiting {e.seconds}s...")
-                # In a web environment, we usually can't wait that long, so we break or warn
-                break
+                logs.append(f"  [OK] Promoted.")
             except Exception as e:
                 logs.append(f"  [FAIL] {str(e)}")
 
@@ -361,10 +319,12 @@ def index():
     error = None
     result_log = None
     
-    # Count bots in file
+    # Calculate bot count
     count = 0
-    if os.path.exists(BOTS_FILE):
-        with open(BOTS_FILE, 'r') as f:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, BOTS_FILE)
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
             count = len([line for line in f if line.strip()])
 
     if request.method == 'POST':
@@ -372,12 +332,8 @@ def index():
         if not channel_link:
             error = "Channel link cannot be empty."
         else:
-            # --- THREAD SAFE EXECUTION ---
-            # This prevents the 'database is locked' error by ensuring
-            # the async loop runs safely within the Flask thread.
             try:
                 with telethon_lock:
-                    # Create new loop for this specific request
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     result_log = loop.run_until_complete(telegram_worker(channel_link))
@@ -393,13 +349,8 @@ def index():
         required_bot=REQUIRED_ADMIN_BOT,
         result_log=result_log,
         error=error
-    )
+   )
 
+# This is required for Vercel to find the app
 if __name__ == '__main__':
-    # Create dummy file for testing
-    if not os.path.exists(BOTS_FILE):
-        with open(BOTS_FILE, 'w') as f:
-            f.write("@BotFather\n@Combot\n@ControllerBot")
-            
-    print("Server running on http://127.0.0.1:5000")
     app.run(debug=True, port=5000)
