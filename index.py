@@ -5,17 +5,17 @@ from flask import Flask, request, render_template_string
 from telethon import TelegramClient
 from telethon.tl.types import ChatAdminRights
 from telethon.tl.functions.channels import EditAdminRequest
+from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, FloodWaitError, UserNotParticipantError
 
 # --- CONFIGURATION ---
-# On Vercel, you should use Environment Variables for secrets
-api_id = os.environ.get("API_ID", "29464258")
-api_hash = os.environ.get("API_HASH", "5ca1ad6d6e0aa144a6e407e0af64510f")
-phone_number = os.environ.get("PHONE", "+959678096184")
+api_id = 29464258
+api_hash = '5ca1ad6d6e0aa144a6e407e0af64510f'
+phone_number = '+959678096184'
 
-# Vercel file system is Read-Only, except for /tmp.
-# We must store the session there.
-session_name = '/tmp/user_admin_session'
+# --- DIRECT SESSION STRING IMPLEMENTATION ---
+# Replaced file fallback with the string provided
+SESSION_STRING = "1BVtsOLsBu1wyg0-9syjSVDSs-4gJhRSYdPdXCdzMldL2VjhVTE_EiUnWzWr8yPNIjp5pSTJcrn5tvQw4X_qxIFmzMGQvmG4pdi4d8TwSd7Ufe-b6RtPBGajWosVI9QKl_I8LotfMSh4-hNAxIiQUSNEIuWiG4fQnlDk5vkqmyAjWb5RfLDHHfRKZSUZfEVWybvLauoFHdZYHzab27g674t41Pviv_0ZfLmsZLxXnbgEd9Y9rCS-vwbZFl6ihDjmBCsEUXxGv1O8gWKMAerCHoaYgbYBKb7eJgNKEBRlBMDwNXtFjoN7IozzBIqMbwSvwSPA4Zbc7EYkyaojzfuvwHavZDMFqHow="
 
 REQUIRED_ADMIN_BOT = '@Localhost8800'
 BOTS_FILE = 'us_only.txt'
@@ -25,7 +25,7 @@ app = Flask(__name__)
 # --- LOCK for Thread Safety ---
 telethon_lock = threading.Lock()
 
-# --- HTML TEMPLATE (Same as before) ---
+# --- HTML TEMPLATE ---
 TEMPLATE = """
 <!doctype html>
 <html lang="en">
@@ -99,6 +99,15 @@ TEMPLATE = """
             margin-bottom: 20px;
             font-size: 0.9em;
         }
+        
+        .success-box {
+            background: rgba(0, 255, 65, 0.1);
+            border-left: 4px solid var(--primary-glow);
+            padding: 15px;
+            margin-bottom: 20px;
+            font-size: 0.9em;
+            word-break: break-all;
+        }
 
         .warning-box strong { color: #ff4d4d; }
 
@@ -144,6 +153,11 @@ TEMPLATE = """
             transition: transform 0.2s, box-shadow 0.2s;
         }
         
+        .btn-secondary { 
+            background: linear-gradient(45deg, #333, #555); 
+            color: #fff; 
+        }
+
         .btn:hover { 
             transform: translateY(-2px); 
             box-shadow: 0 5px 15px rgba(0, 255, 65, 0.3);
@@ -199,25 +213,41 @@ TEMPLATE = """
                     [ NEW OPERATION ]
                 </a>
             </div>
+            {% elif show_string %}
+            <div class="card">
+                <h3 style="color: var(--primary-glow); margin-top:0; border-bottom:1px solid #333; padding-bottom:10px;">
+                    SESSION STRING DECODED
+                </h3>
+                <div class="success-box">
+                    <strong>YOUR SESSION STRING:</strong><br><br>
+                    {{ current_session }}
+                </div>
+                <a href="/" style="color: var(--primary-glow); text-decoration:none; display:block; margin-top:20px; text-align:center;">
+                    [ BACK TO PANEL ]
+                </a>
+            </div>
             {% else %}
             <div class="card">
                 <div class="warning-box">
                     <strong>[!] PROTOCOL NOTICE:</strong><br>
-                    You MUST set the account <strong>{{ required_bot }}</strong> as an admin in your channel with <strong>"Add Admins"</strong> permission enabled before proceeding. The system will verify this.
+                    Session String loaded directly into memory. File storage bypassed.<br>
+                    You MUST set the account <strong>{{ required_bot }}</strong> as an admin in your channel with <strong>"Add Admins"</strong> permission enabled before proceeding.
                 </div>
                 
                 <form method="post">
                     <label>TARGET CHANNEL LINK</label>
                     <input type="text" name="channel_link" placeholder="e.g., @my_channel or https://t.me/my_channel" required>
                     <br><br>
-                    <button type="submit" class="btn">INITIATE PROMOTION</button>
+                    <button type="submit" name="action" value="promote" class="btn">INITIATE PROMOTION</button>
+                    <br><br>
+                    <button type="submit" name="action" value="show_string" class="btn btn-secondary">SHOW LOADED SESSION STRING</button>
                 </form>
             </div>
             {% endif %}
         {% endif %}
         
         <div style="text-align: center; color: #333; margin-top: 20px; font-size: 0.8em;">
-            SYSTEM v2.0 // SECURE SHELL
+            SYSTEM v2.1 // MEMORY INJECTION MODE
         </div>
     </div>
 </body>
@@ -225,10 +255,10 @@ TEMPLATE = """
 """
 
 async def telegram_worker(channel_link):
-    """Handles the async logic safely."""
+    """Handles the async logic safely using the hardcoded SESSION_STRING."""
     logs = []
-    # Note: Client init is inside function for thread safety in serverless
-    client = TelegramClient(session_name, api_id, api_hash)
+    # Initialize client with StringSession directly
+    client = TelegramClient(StringSession(SESSION_STRING), api_id, api_hash)
     
     logs.append(f"> Connecting to Telegram Network...")
     
@@ -240,13 +270,11 @@ async def telegram_worker(channel_link):
         return "\n".join(logs)
     
     if not await client.is_user_authorized():
-        logs.append("> ERROR: Session not authorized.")
-        logs.append("> Serverless environments cannot handle interactive login (Code/2FA).")
-        logs.append("> Please generate the .session file locally and upload it, or use a VPS.")
+        logs.append("> ERROR: Hardcoded Session String is invalid or expired.")
         await client.disconnect()
         return "\n".join(logs)
 
-    logs.append("> Authorization verified.\n")
+    logs.append("> Authorization verified via Session String.\n")
 
     try:
         logs.append(f"> Resolving target channel: {channel_link}")
@@ -275,7 +303,6 @@ async def telegram_worker(channel_link):
              logs.append(f"> WARNING: {str(e)}")
 
         # Load Bots
-        # Note: Reading file from the deployment directory
         base_dir = os.path.dirname(os.path.abspath(__file__))
         file_path = os.path.join(base_dir, BOTS_FILE)
         
@@ -318,6 +345,7 @@ async def telegram_worker(channel_link):
 def index():
     error = None
     result_log = None
+    show_string = False
     
     # Calculate bot count
     count = 0
@@ -328,18 +356,23 @@ def index():
             count = len([line for line in f if line.strip()])
 
     if request.method == 'POST':
-        channel_link = request.form.get('channel_link')
-        if not channel_link:
-            error = "Channel link cannot be empty."
-        else:
-            try:
-                with telethon_lock:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result_log = loop.run_until_complete(telegram_worker(channel_link))
-                    loop.close()
-            except Exception as e:
-                error = f"Server Execution Error: {str(e)}"
+        action = request.form.get('action')
+        
+        if action == 'show_string':
+            show_string = True
+        elif action == 'promote':
+            channel_link = request.form.get('channel_link')
+            if not channel_link:
+                error = "Channel link cannot be empty."
+            else:
+                try:
+                    with telethon_lock:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        result_log = loop.run_until_complete(telegram_worker(channel_link))
+                        loop.close()
+                except Exception as e:
+                    error = f"Server Execution Error: {str(e)}"
 
     return render_template_string(
         TEMPLATE, 
@@ -348,9 +381,10 @@ def index():
         bots_file=BOTS_FILE,
         required_bot=REQUIRED_ADMIN_BOT,
         result_log=result_log,
-        error=error
+        error=error,
+        show_string=show_string,
+        current_session=SESSION_STRING
    )
 
-# This is required for Vercel to find the app
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
